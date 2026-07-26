@@ -8,6 +8,7 @@ export class RateLimitError extends Error {
 export interface RateLimiterOptions {
   perSecond: number;
   perMonth: number;
+  marginFactor?: number;
   now?: () => number;
 }
 
@@ -16,19 +17,26 @@ function monthlyWindowOf(timestamp: number) {
   return date.getUTCFullYear() * 12 + date.getUTCMonth();
 }
 
-function sleep(ms: number) {
+export function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 // Callers are queued rather than rejected so a burst of requests is spread
 // across the per-second allowance instead of failing. The monthly quota is
 // held in memory, so it resets whenever the process restarts.
+//
+// Spacing is measured when a slot is granted, but Brave enforces on arrival in
+// fixed one-second buckets, so pacing at exactly the allowance lets network
+// jitter drop two requests into the same bucket. marginFactor buys the
+// headroom, and scales with the allowance so raising perSecond still speeds
+// things up.
 export function createRateLimiter({
   perSecond,
   perMonth,
+  marginFactor = 1,
   now = Date.now,
 }: RateLimiterOptions) {
-  const minIntervalMs = 1000 / perSecond;
+  const minIntervalMs = (1000 / perSecond) * marginFactor;
 
   let queue: Promise<void> = Promise.resolve();
   let lastAcquiredAt = 0;

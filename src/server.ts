@@ -4,8 +4,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as Sentry from "@sentry/bun";
 import express from "express";
 import { z } from "zod";
-import { localSearch, webSearch, MAX_COUNT, MAX_OFFSET } from "./brave-api";
-import { formatLocalSearchResults, formatWebResults } from "./format";
+import { webSearch, MAX_COUNT, MAX_OFFSET } from "./brave-api";
+import { formatWebResults } from "./format";
 
 async function runTool(run: () => Promise<string>): Promise<CallToolResult> {
   try {
@@ -71,41 +71,6 @@ function createServer() {
     async ({ query, count, offset }) =>
       runTool(async () =>
         formatWebResults(await webSearch(query, count, offset))
-      )
-  );
-
-  server.registerTool(
-    "brave_local_search",
-    {
-      title: "Brave Local Search",
-      description:
-        "Searches for local businesses and places using Brave's Local Search API. " +
-        "Best for queries related to physical locations, businesses, restaurants and services. " +
-        "Returns names, addresses, phone numbers, ratings and opening hours. " +
-        "Use this when the query implies 'near me' or mentions a specific location. " +
-        "Automatically falls back to a web search if no local results are found.",
-      inputSchema: {
-        query: z
-          .string()
-          .min(1)
-          .max(400)
-          .describe("Local search query (e.g. 'pizza near Central Park')"),
-        count: z
-          .number()
-          .int()
-          .min(1)
-          .max(MAX_COUNT)
-          .default(5)
-          .describe(`Number of results (1-${MAX_COUNT}, default 5)`),
-      },
-      annotations: {
-        readOnlyHint: true,
-        openWorldHint: true,
-      },
-    },
-    async ({ query, count }) =>
-      runTool(async () =>
-        formatLocalSearchResults(await localSearch(query, count))
       )
   );
 

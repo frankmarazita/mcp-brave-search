@@ -12,6 +12,7 @@ const zEnv = z.object({
   BRAVE_API_KEY: z.string().min(1),
   BRAVE_RATE_LIMIT_PER_SECOND: z.coerce.number().positive().default(1),
   BRAVE_RATE_LIMIT_PER_MONTH: z.coerce.number().int().positive().default(2000),
+  BRAVE_RATE_LIMIT_MARGIN: z.coerce.number().min(1).default(1.25),
 });
 
 export const ENV = zEnv.parse(process.env);

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ENV } from "./env";
-import { createRateLimiter } from "./rate-limit";
+import { createRateLimiter, sleep } from "./rate-limit";
 
 const zBraveError = z.object({
   error: z.object({ detail: z.string().min(1) }),
@@ -8,12 +8,11 @@ const zBraveError = z.object({
 
 const API_ENDPOINTS = {
   webSearch: "https://api.search.brave.com/res/v1/web/search",
-  pois: "https://api.search.brave.com/res/v1/local/pois",
-  descriptions: "https://api.search.brave.com/res/v1/local/descriptions",
 };
 
 export const MAX_COUNT = 20;
 export const MAX_OFFSET = 9;
+export const MAX_RETRIES = 3;
 
 interface BraveWebResponse {
   web?: {
@@ -23,36 +22,6 @@ interface BraveWebResponse {
       url?: string;
     }>;
   };
-  locations?: {
-    results?: Array<{
-      id?: string;
-      title?: string;
-    }>;
-  };
-}
-
-interface BravePoiResponse {
-  results?: Array<{
-    id: string;
-    name?: string;
-    address?: {
-      streetAddress?: string;
-      addressLocality?: string;
-      addressRegion?: string;
-      postalCode?: string;
-    };
-    phone?: string;
-    rating?: {
-      ratingValue?: number;
-      ratingCount?: number;
-    };
-    openingHours?: string[];
-    priceRange?: string;
-  }>;
-}
-
-interface BraveDescriptionResponse {
-  descriptions?: Record<string, string>;
 }
 
 export interface WebResult {
@@ -60,20 +29,6 @@ export interface WebResult {
   description: string;
   url: string;
 }
-
-export interface Place {
-  name: string;
-  address: string;
-  phone?: string;
-  rating?: number;
-  ratingCount?: number;
-  priceRange?: string;
-  openingHours: string[];
-  description?: string;
-}
-
-export type LocalSearchResults =
-  { kind: "local"; places: Place[] } | { kind: "web"; results: WebResult[] };
 
 export class BraveApiError extends Error {
   constructor(
@@ -101,28 +56,51 @@ function errorDetail(statusText: string, body: string) {
 const rateLimiter = createRateLimiter({
   perSecond: ENV.BRAVE_RATE_LIMIT_PER_SECOND,
   perMonth: ENV.BRAVE_RATE_LIMIT_PER_MONTH,
+  marginFactor: ENV.BRAVE_RATE_LIMIT_MARGIN,
 });
 
+export function retryAfterMs(response: Response) {
+  const header = response.headers.get("retry-after");
+  if (!header) return null;
+
+  const seconds = Number(header);
+  if (header.trim() !== "" && Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+
+  const date = Date.parse(header);
+  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
+}
+
+function backoffMs(response: Response, attempt: number) {
+  return retryAfterMs(response) ?? 2 ** attempt * 1000;
+}
+
 async function braveFetch<T>(operation: string, url: URL): Promise<T> {
-  await rateLimiter.acquire();
+  for (let attempt = 0; ; attempt++) {
+    await rateLimiter.acquire();
 
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-      "Accept-Encoding": "gzip",
-      "X-Subscription-Token": ENV.BRAVE_API_KEY,
-    },
-  });
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": ENV.BRAVE_API_KEY,
+      },
+    });
 
-  if (!response.ok) {
+    if (response.ok) return (await response.json()) as T;
+
+    if (response.status === 429 && attempt < MAX_RETRIES) {
+      await sleep(backoffMs(response, attempt));
+      continue;
+    }
+
     throw new BraveApiError(
       operation,
       response.status,
       errorDetail(response.statusText, await response.text())
     );
   }
-
-  return (await response.json()) as T;
 }
 
 function clampCount(count: number) {
@@ -148,70 +126,5 @@ export async function webSearch(
     title: result.title ?? "",
     description: result.description ?? "",
     url: result.url ?? "",
-  }));
-}
-
-export async function localSearch(
-  query: string,
-  count = 5
-): Promise<LocalSearchResults> {
-  const url = new URL(API_ENDPOINTS.webSearch);
-  url.searchParams.set("q", query);
-  url.searchParams.set("search_lang", "en");
-  url.searchParams.set("result_filter", "locations");
-  url.searchParams.set("count", clampCount(count).toString());
-
-  const data = await braveFetch<BraveWebResponse>("local search", url);
-
-  const ids = (data.locations?.results ?? [])
-    .map((result) => result.id)
-    .filter((id): id is string => Boolean(id));
-
-  if (ids.length === 0) {
-    return { kind: "web", results: await webSearch(query, count) };
-  }
-
-  const [pois, descriptions] = await Promise.all([
-    getPois(ids),
-    getDescriptions(ids),
-  ]);
-
-  return { kind: "local", places: toPlaces(pois, descriptions) };
-}
-
-async function getPois(ids: string[]) {
-  const url = new URL(API_ENDPOINTS.pois);
-  ids.forEach((id) => url.searchParams.append("ids", id));
-
-  return braveFetch<BravePoiResponse>("get pois", url);
-}
-
-async function getDescriptions(ids: string[]) {
-  const url = new URL(API_ENDPOINTS.descriptions);
-  ids.forEach((id) => url.searchParams.append("ids", id));
-
-  return braveFetch<BraveDescriptionResponse>("get descriptions", url);
-}
-
-function toPlaces(
-  pois: BravePoiResponse,
-  descriptions: BraveDescriptionResponse
-): Place[] {
-  return (pois.results ?? []).map((poi) => ({
-    name: poi.name ?? "Unknown",
-    address: [
-      poi.address?.streetAddress,
-      poi.address?.addressLocality,
-      poi.address?.addressRegion,
-      poi.address?.postalCode,
-    ]
-      .filter((part): part is string => Boolean(part))
-      .join(", "),
-    phone: poi.phone,
-    rating: poi.rating?.ratingValue,
-    ratingCount: poi.rating?.ratingCount,
-    priceRange: poi.priceRange,
-    openingHours: poi.openingHours ?? [],
-    description: descriptions.descriptions?.[poi.id],
   }));
 }

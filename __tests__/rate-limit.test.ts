@@ -26,6 +26,34 @@ describe("createRateLimiter", () => {
     expect(timestamps[3]! - timestamps[0]!).toBeGreaterThanOrEqual(55);
   });
 
+  test("scales the interval by the safety margin", async () => {
+    const limiter = createRateLimiter({
+      perSecond: 50,
+      perMonth: 10,
+      marginFactor: 3,
+    });
+    const start = Date.now();
+
+    await limiter.acquire();
+    await limiter.acquire();
+
+    expect(Date.now() - start).toBeGreaterThanOrEqual(55);
+  });
+
+  test("keeps the margin proportional as the allowance rises", async () => {
+    const limiter = createRateLimiter({
+      perSecond: 200,
+      perMonth: 10,
+      marginFactor: 2,
+    });
+    const start = Date.now();
+
+    await limiter.acquire();
+    await limiter.acquire();
+
+    expect(Date.now() - start).toBeLessThan(50);
+  });
+
   test("throws once the monthly quota is exhausted", async () => {
     const limiter = createRateLimiter({ perSecond: 1000, perMonth: 2 });
 

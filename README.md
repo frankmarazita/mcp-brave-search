@@ -1,13 +1,11 @@
 # mcp-brave search
 
 An MCP server that proxies Brave's Search API over SSE, so any MCP client that
-speaks the SSE transport can run Brave web and local searches.
+speaks the SSE transport can run Brave web searches.
 
 ## Tools
 
 - `brave_web_search` — general web search with pagination.
-- `brave_local_search` — businesses and places, falling back to a web search
-  when Brave returns no locations.
 
 ## Setup
 
@@ -44,6 +42,12 @@ Requests to Brave are queued to stay within the per-second allowance, and a
 monthly request quota is tracked in memory. Both limits default to the free
 tier and can be raised with `BRAVE_RATE_LIMIT_PER_SECOND` and
 `BRAVE_RATE_LIMIT_PER_MONTH`. The listening port can be changed with `PORT`.
+
+Queued requests are spaced by the per-second interval multiplied by
+`BRAVE_RATE_LIMIT_MARGIN`, which defaults to 1.25. Brave enforces its limit on
+arrival in fixed one-second buckets, so pacing at exactly the allowance lets
+network jitter put two requests in the same bucket. Rate-limited responses are
+retried with backoff, honouring `Retry-After` when Brave sends it.
 
 ## Docker
 
